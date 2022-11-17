@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import abc
 import asyncio
 import collections
 import random
@@ -11,6 +12,8 @@ from typing import NamedTuple
 
 NON_RESERVED_PORT_MIN = 49152
 NON_RESERVED_PORT_MAX = 65535
+ENTRY_PROXY_PORT = 51234
+EXIT_PROXY_PORT = 51235
 
 
 # SOURCE: https://stackoverflow.com/a/166589
@@ -124,7 +127,7 @@ class HTTPRequest:
                          self.body])
 
 
-class ProxyServer:
+class Server(abc.ABC):
     def __init__(self, port: int = None):
         self.port = port if port is not None else random.randint(NON_RESERVED_PORT_MIN, NON_RESERVED_PORT_MAX)
         self.server = None
@@ -138,7 +141,7 @@ class ProxyServer:
 
     async def start(self):
         """Starts the proxy server."""
-        self.server = await asyncio.start_server(tunnel, '0.0.0.0', self.port, start_serving=True)
+        self.server = await asyncio.start_server(self.callback, '0.0.0.0', self.port, start_serving=True)
         print(f'Proxy server running on {get_local_ip_address()}:{self.port}')
         try:
             await self.server.serve_forever()
@@ -152,103 +155,119 @@ class ProxyServer:
         await self.server.wait_closed()
         print(f'Closed proxy server')
 
-
-async def tunnel(client_reader: StreamReader, client_writer: StreamWriter):
-    """Creates a tunnel between the client and the server it requests to connect to.
-    This method runs until either the client or the server closes the connection."""
-    # Get the client's port
-    port = client_writer.get_extra_info('peername')[1]
-    print(f'[{port}] Client connected')
-
-    # Wait until a complete HTTP request is sent
-    try:
-        req = await asyncio.wait_for(HTTPRequest.from_reader(client_reader), timeout=30)
-        print(f'[{port}] Got initial request: {bytes(req)!r}')
-    except asyncio.TimeoutError:
-        print(f'[{port}] Client timed out')
-        return
-    except ConnectionResetError:
-        print(f'[{port}] Client connection reset')
-        return
-    except (EOFError, OSError):
-        print(f'[{port}] Client error')
-        print(traceback.format_exc())
-        return
-    req.headers.proxy()
-
-    # Open a connection to the server specified in the request
-    try:
-        server_reader, server_writer = await asyncio.wait_for(asyncio.open_connection(*req.target), timeout=30)
-        print(f'[{port}] Connected to server')
-    except asyncio.TimeoutError:
-        print(f'[{port}] Server timed out')
-        return
-    except (EOFError, OSError):
-        print(f'[{port}] Server error')
-        print(traceback.format_exc())
-        return
-
-    # If using HTTPS tunneling, respond to client with 200 OK so that it can begin TLS negotiation
-    if req.method == 'CONNECT':
-        res = b'HTTP/1.1 200 OK\r\n\r\n'
-        client_writer.write(res)
-        print(f'[{port}] Sent to client: {res!r}')
-    # Otherwise, send the initial request to the server directly
-    else:
-        server_writer.write(bytes(req))
-        print(f'[{port}] Sent to server: {bytes(req)!r}')
-
-    # Continue piping messages back-and-forth until one of the connections is closed
-    done, pending = await asyncio.wait([
-            asyncio.create_task(pipe_client_to_server(port, client_reader, server_writer)),
-            asyncio.create_task(pipe_server_to_client(port, server_reader, client_writer))
-        ], return_when=asyncio.FIRST_COMPLETED)
-    for future in pending:
-        future.cancel()
-    print(f'[{port}] Tunnel finished')
+    @staticmethod
+    async def callback(client_reader: StreamReader, client_writer: StreamWriter):
+        raise NotImplementedError
 
 
-async def pipe_client_to_server(port: int, client_reader: StreamReader, server_writer: StreamWriter):
-    """Pipes data from the client to server."""
+class EntryServer(Server):
+    @staticmethod
+    async def callback(client_reader: StreamReader, client_writer: StreamWriter):
+        """Creates a tunnel between the client and the request server.
+        This method runs until either the client or the request server closes the connection."""
+        # Get the client's port
+        port = client_writer.get_extra_info('peername')[1]
+        print(f'[{port}] Client connected')
+
+        # Open a connection to the exit node
+        try:
+            server_reader, server_writer = await asyncio.open_connection('localhost', EXIT_PROXY_PORT)
+        except asyncio.TimeoutError:
+            print(f'[{port}] Exit node timed out')
+            return
+        except (EOFError, OSError):
+            print(f'[{port}] Exit node error')
+            print(traceback.format_exc())
+            return
+
+        # Continue piping messages back-and-forth until one of the connections is closed
+        done, pending = await asyncio.wait([
+                asyncio.create_task(pipe(port, client_reader, server_writer)),
+                asyncio.create_task(pipe(port, server_reader, client_writer))
+            ], return_when=asyncio.FIRST_COMPLETED)
+        for future in pending:
+            future.cancel()
+        print(f'[{port}] Tunnel finished')
+
+
+class ExitServer(Server):
+    @staticmethod
+    async def callback(client_reader: StreamReader, client_writer: StreamWriter):
+        """Creates a tunnel between the client and the server it requests to connect to.
+        This method runs until either the client or the server closes the connection."""
+        # Get the client's port
+        port = client_writer.get_extra_info('peername')[1]
+        print(f'[{port}] Entry node connected')
+
+        # Wait until a complete HTTP request is sent
+        try:
+            req = await asyncio.wait_for(HTTPRequest.from_reader(client_reader), timeout=30)
+            print(f'[{port}] Got initial request: {bytes(req)!r}')
+        except asyncio.TimeoutError:
+            print(f'[{port}] Entry node timed out')
+            return
+        except ConnectionResetError:
+            print(f'[{port}] Entry node connection reset')
+            return
+        except (EOFError, OSError):
+            print(f'[{port}] Entry node error')
+            print(traceback.format_exc())
+            return
+        req.headers.proxy()
+
+        # Open a connection to the server specified in the request
+        try:
+            server_reader, server_writer = await asyncio.wait_for(asyncio.open_connection(*req.target), timeout=30)
+            print(f'[{port}] Connected to server')
+        except asyncio.TimeoutError:
+            print(f'[{port}] Server timed out')
+            return
+        except (EOFError, OSError):
+            print(f'[{port}] Server error')
+            print(traceback.format_exc())
+            return
+
+        # If using HTTPS tunneling, respond to client with 200 OK so that it can begin TLS negotiation
+        if req.method == 'CONNECT':
+            res = b'HTTP/1.1 200 OK\r\n\r\n'
+            client_writer.write(res)
+            print(f'[{port}] Sent to entry node: {res!r}')
+        # Otherwise, send the initial request to the server directly
+        else:
+            server_writer.write(bytes(req))
+            print(f'[{port}] Sent to server: {bytes(req)!r}')
+
+        # Continue piping messages back-and-forth until one of the connections is closed
+        done, pending = await asyncio.wait([
+                asyncio.create_task(pipe(port, client_reader, server_writer)),
+                asyncio.create_task(pipe(port, server_reader, client_writer))
+            ], return_when=asyncio.FIRST_COMPLETED)
+        for future in pending:
+            future.cancel()
+        print(f'[{port}] Tunnel finished')
+
+
+async def pipe(port: int, reader: StreamReader, writer: StreamWriter):
+    """Pipes data between from one stream to another."""
     try:
         while True:
-            client_data = await asyncio.wait_for(client_reader.read(4096), timeout=30)
+            client_data = await asyncio.wait_for(reader.read(4096), timeout=30)
             if not client_data:
-                print(f'[{port}] Client reached EOF')
+                print(f'[{port}] Pipe reached EOF')
                 break
-            # print(f'[{port}] Sent to server: {client_data!r}')
-            print(f'[{port}] Sent {len(client_data)} bytes to server')
-            server_writer.write(client_data)
-            await server_writer.drain()
+            # print(f'[{port}] Sent through pipe: {client_data!r}')
+            print(f'[{port}] Sent {len(client_data)} bytes through pipe')
+            writer.write(client_data)
+            await writer.drain()
     except asyncio.TimeoutError:
-        print(f'[{port}] Client timed out')
+        print(f'[{port}] Pipe timed out')
     except ConnectionResetError:
-        print(f'[{port}] Client connection reset')
+        print(f'[{port}] Pipe connection reset')
     except (EOFError, OSError):
-        print(f'[{port}] Client error')
-        print(traceback.format_exc())
-
-
-async def pipe_server_to_client(port: int, server_reader: StreamReader, client_writer: StreamWriter):
-    """Pipes data from the server to client."""
-    try:
-        while True:
-            server_data = await asyncio.wait_for(server_reader.read(4096), timeout=30)
-            if not server_data:
-                print(f'[{port}] Server reached EOF')
-                break
-            # print(f'[{port}] Sent to client: {server_data!r}')
-            print(f'[{port}] Sent {len(server_data)} bytes to client')
-            client_writer.write(server_data)
-            await client_writer.drain()
-    except asyncio.TimeoutError:
-        print(f'[{port}] Server timed out')
-    except ConnectionResetError:
-        print(f'[{port}] Server connection reset')
-    except (EOFError, OSError):
-        print(f'[{port}] Server error')
+        print(f'[{port}] Pipe error')
         print(traceback.format_exc())
 
 
 if __name__ == '__main__':
-    asyncio.run(ProxyServer(9999).start())
+    asyncio.run(asyncio.wait([EntryServer(ENTRY_PROXY_PORT).start(),
+                              ExitServer(EXIT_PROXY_PORT).start()]))
