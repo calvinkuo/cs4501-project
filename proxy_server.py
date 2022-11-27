@@ -6,8 +6,10 @@ import collections
 import random
 import re
 import socket
+import struct
 import traceback
 from asyncio import StreamReader, StreamWriter
+from io import BytesIO
 from typing import NamedTuple
 
 NON_RESERVED_PORT_MIN = 49152
@@ -107,6 +109,28 @@ class HTTPRequest:
 
         return cls(method, request_target, http_version, headers, body)
 
+    @classmethod
+    def from_bytes(cls, buf: bytes):
+        i = buf.find(b'\r\n')
+        start_line, buf = buf[:i+2], buf[i+2:]
+        method, request_target, http_version = cls._RE_START_LINE.match(start_line.decode('ascii')).groups()
+
+        raw_headers = []
+        i = buf.find(b'\r\n')
+        header, buf = buf[:i+2], buf[i+2:]
+        while header.rstrip(b' \t\r\n') != b'':
+            raw_headers.append(header)
+            i = buf.find(b'\r\n')
+            header, buf = buf[:i+2], buf[i+2:]
+        headers = HTTPHeaders.from_bytes(raw_headers)
+
+        # If this request has `Transfer-Encoding: chunked`, the body continues until a chunk of length of 0.
+        # If this request has a `Content-Length` header, the body will be the specified length in bytes.
+        body = buf
+
+        return cls(method, request_target, http_version, headers, body)
+
+
     @property
     def target(self) -> tuple[str, int]:
         """Returns a tuple consisting of the host and port that this request should be sent to."""
@@ -153,8 +177,7 @@ class Server(abc.ABC):
         await self.server.wait_closed()
         print(f'Closed proxy server')
 
-    @staticmethod
-    async def callback(client_reader: StreamReader, client_writer: StreamWriter):
+    async def callback(self, client_reader: StreamReader, client_writer: StreamWriter):
         raise NotImplementedError
 
 
@@ -177,3 +200,24 @@ async def pipe(port: int, reader: StreamReader, writer: StreamWriter):
     except (EOFError, OSError):
         print(f'[{port}] Pipe error')
         print(traceback.format_exc())
+
+
+class ReaderWriterPair(NamedTuple):
+    reader: StreamReader
+    writer: StreamWriter
+
+
+class Payload(NamedTuple):
+    port: int
+    body: bytes
+
+    def pack(self) -> bytes:
+        packed = bytearray(2)
+        struct.pack_into('!H', packed, 0, self.port)
+        packed += self.body
+        return bytes(packed)
+
+    @classmethod
+    def unpack(cls, packed: bytes) -> Payload:
+        port, = struct.unpack_from('!H', packed, 0)
+        return cls(port, packed[2:])

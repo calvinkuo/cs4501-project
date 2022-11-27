@@ -7,8 +7,7 @@ EXIT_PROXY_PORT = 51235
 
 
 class ExitServer(Server):
-    @staticmethod
-    async def callback(client_reader: StreamReader, client_writer: StreamWriter):
+    async def callback(self, client_reader: StreamReader, client_writer: StreamWriter):
         """Creates a tunnel between the client and the server it requests to connect to.
         This method runs until either the client or the server closes the connection."""
         # Get the client's port

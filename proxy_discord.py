@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import asyncio
+import abc
 import binascii
 import dataclasses
 import enum
@@ -15,9 +15,18 @@ from Cryptodome.Cipher import AES
 
 HEADER_FORMAT = '!HHxxxxLLQQ'
 HEADER_SIZE = struct.calcsize(HEADER_FORMAT)
+DISCORD_MAX_MESSAGE_LENGTH = 2000
+DISCORD_READ_SIZE = DISCORD_MAX_MESSAGE_LENGTH * 2 - 32 - 32 - 2
+# using base65535, each message has 4000 bytes
+# there are two bytes used for the port in Payload
+# there are 32 bytes used for the Packet header
+# there are 32 bytes used for the EncryptedPacket header
+
+dotenv.load_dotenv()
+AES_KEY = int(os.environ['AES_KEY'], 16).to_bytes(32, 'big', signed=False)
 
 
-class ProxyPacketFlags(enum.Flag):
+class PacketFlag(enum.Flag):
     BGN = 0x0001
     END = 0x0002
     ACK = 0x0004
@@ -37,7 +46,7 @@ class ProxyPacketFlags(enum.Flag):
 
 
 @dataclasses.dataclass(frozen=True)
-class ProxyPacket:
+class Packet:
     """
     A packet has the following format. All values are stored in network order (big-endian).
 
@@ -50,7 +59,7 @@ class ProxyPacket:
     - payload: bytes
     """
     # _length: int  # uint16 / unsigned short / H
-    flags: ProxyPacketFlags  # uint16 / unsigned short / H
+    flags: PacketFlag  # uint16 / unsigned short / H
     seq_num: int  # uint32 / unsigned long / L
     ack_num: int  # uint32 / unsigned long / L
     src: int  # uint64 / unsigned long long / Q
@@ -65,13 +74,20 @@ class ProxyPacket:
         return bytes(packet)
 
     @classmethod
-    def unpack(cls, packet: bytes) -> ProxyPacket:
+    def unpack(cls, packet: bytes) -> Packet:
         payload_length, flags, *fields = struct.unpack_from(HEADER_FORMAT, packet, 0)
         assert len(packet) == HEADER_SIZE + payload_length
-        return cls(ProxyPacketFlags(flags), *fields, packet[HEADER_SIZE:])
+        return cls(PacketFlag(flags), *fields, packet[HEADER_SIZE:])
 
 
-class ProxyPacketEncrypted(ProxyPacket):
+class PacketEncrypted(Packet):
+    """
+    An encrypted packet has the following format.
+
+    - nonce: 16 bytes
+    - tag: 16 bytes
+    - ciphertext: encrypted bytes of the underlying packet
+    """
     def pack(self) -> bytes:
         packet = super().pack()
         cipher = AES.new(AES_KEY, AES.MODE_GCM)
@@ -79,7 +95,7 @@ class ProxyPacketEncrypted(ProxyPacket):
         return b''.join([cipher.nonce, tag, ciphertext])
 
     @classmethod
-    def unpack(cls, packet: bytes) -> ProxyPacket:
+    def unpack(cls, packet: bytes) -> Packet:
         nonce = packet[0:16]
         tag = packet[16:32]
         ciphertext = packet[32:]
@@ -88,45 +104,36 @@ class ProxyPacketEncrypted(ProxyPacket):
         return super().unpack(plaintext)
 
 
-class EntryDiscord(discord.Client):
+class DiscordBot(discord.Client, abc.ABC):
     def __init__(self, **options):
         super().__init__(intents=discord.Intents(messages=True, guilds=True), **options)
-        self.id = random.randrange(1, 2**64)
+        self.id = random.randrange(1, 2 ** 64)
         self.channel = None
 
     async def on_ready(self):
         print(f'Logged in!')
         self.channel = self.get_channel(int(os.environ['CHANNEL_ID']))
-        await self.send_packet(0, b'1', ProxyPacketFlags.BGN)
 
     async def on_message(self, message: discord.Message):
         if message.author == self.user:
-            await self.callback(message.content)
+            try:
+                packet = PacketEncrypted.unpack(base65536.decode(message.content))
+                if packet.src != self.id and (packet.dst == self.id or packet.dst == 0):
+                    await self.callback(packet)
+            except (ValueError, KeyError):
+                # could not decrypt packet
+                pass
+            except (struct.error, binascii.Error):
+                # ignore invalid packets
+                pass
 
-    async def send_packet(self, dst: int, payload: bytes, flags: ProxyPacketFlags):
-        packet = ProxyPacketEncrypted(flags, 0, 0, self.id, dst, payload)
-        await self.channel.send(base65536.encode(packet.pack()))
+    async def send_packet(self, dst: int, payload: bytes, flags: PacketFlag = PacketFlag(0)):
+        packet = PacketEncrypted(flags, 0, 0, self.id, dst, payload)
+        content = base65536.encode(packet.pack())
+        if len(content) > 2000:
+            print("Error: content is too long", len(content))
+        await self.channel.send(content)
         print('Sent', packet)
 
-    async def callback(self, content: str):
-        try:
-            packet = ProxyPacketEncrypted.unpack(base65536.decode(content))
-            if packet.src != self.id and (packet.dst == self.id or packet.dst == 0):
-                print('Received', packet)
-                if packet.payload:
-                    value = int(packet.payload.decode('ascii'))
-                    await asyncio.sleep(2)
-                    await self.send_packet(packet.src, str(value + 1).encode('ascii'), ProxyPacketFlags.ACK)
-        except (ValueError, KeyError):
-            # could not decrypt packet
-            pass
-        except (struct.error, binascii.Error):
-            # ignore invalid packets
-            pass
-
-
-if __name__ == '__main__':
-    dotenv.load_dotenv()
-    AES_KEY = int(os.environ['AES_KEY'], 16).to_bytes(32, 'big', signed=False)
-    EntryDiscord().run(os.environ['TOKEN'])
-
+    async def callback(self, packet: Packet):
+        raise NotImplementedError
