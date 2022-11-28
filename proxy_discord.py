@@ -108,7 +108,7 @@ class PacketEncrypted(Packet):
 
 
 class DiscordBot(discord.Client, abc.ABC):
-    MAX_MSG_LEN = 8 * 2 ** 20
+    MAX_MSG_LEN = 2000
     READ_SIZE = MAX_MSG_LEN * 2 - PacketEncrypted.HEADER_LEN
 
     def __init__(self, **options):
