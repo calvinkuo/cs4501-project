@@ -6,7 +6,7 @@ import traceback
 from asyncio import StreamReader, StreamWriter
 
 from proxy_discord import DiscordBot, Packet, PacketFlag
-from proxy_server import Server, HTTPRequest, ReaderWriterPair
+from proxy_server import Server, HTTPRequest, ReaderWriterPair, read_from
 
 
 class ExitServer(Server):
@@ -52,7 +52,7 @@ class ExitServer(Server):
 
             # Open a connection to the server specified in the request
             try:
-                server_reader, server_writer = await asyncio.wait_for(asyncio.open_connection(*req.target), timeout=30)
+                server_reader, server_writer = await asyncio.wait_for(asyncio.open_connection(*req.target), timeout=60)
                 print(f'[{port}] Connected to server')
             except asyncio.TimeoutError:
                 print(f'[{port}] Server timed out')
@@ -79,7 +79,7 @@ class ExitServer(Server):
             # Pipe data from server to Discord
             try:
                 while True:
-                    server_data = await asyncio.wait_for(server_reader.read(DiscordBot.READ_SIZE), timeout=30)
+                    server_data = await asyncio.wait_for(read_from(server_reader, DiscordBot.READ_SIZE), timeout=60)
                     if not server_data:
                         print(f'[{port}] Pipe reached EOF')
                         # await my_bot.send_packet(packet.src, port, flags=PacketFlag.END)

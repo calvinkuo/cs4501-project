@@ -36,10 +36,11 @@ class PACServer(Server):
         if req.request_target.endswith('/proxy.pac'):
             with open('public/proxy.pac', 'rb') as f:
                 body = f.read()
+            # b'Cache-Control: max-age=5, must-revalidate\r\n' \
             res = b'HTTP/1.1 200 OK\r\n' \
-                  b'Cache-Control: max-age=60, must-revalidate\r\n' \
                   b'Content-Type: application/x-ns-proxy-autoconfig\r\n' \
-                  b'Content-Length: ' + str(len(body)).encode('ascii') + b'\r\n\r\n' + body
+                  b'Content-Length: ' + str(len(body)).encode('ascii') + b'\r\n' \
+                  b'\r\n' + body
         else:
             res = b'HTTP/1.1 404 Not Found\r\n\r\n'
         client_writer.write(res)

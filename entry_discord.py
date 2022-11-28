@@ -7,7 +7,7 @@ from asyncio import StreamReader, StreamWriter
 
 import pac
 from proxy_discord import DiscordBot, Packet, PacketFlag
-from proxy_server import Server, HTTPRequest, ReaderWriterPair, get_local_ip_address
+from proxy_server import Server, HTTPRequest, ReaderWriterPair, get_local_ip_address, read_from
 
 
 class EntryServer(Server):
@@ -35,7 +35,7 @@ class EntryServer(Server):
 
         # Wait until a complete HTTP request is sent
         try:
-            req = await asyncio.wait_for(HTTPRequest.from_reader(client_reader), timeout=30)
+            req = await asyncio.wait_for(HTTPRequest.from_reader(client_reader), timeout=60)
             print(f'[{port}] Got initial request: {bytes(req)!r}')
             await my_bot.send_packet(0, port, flags=PacketFlag.BGN, payload=bytes(req))
         except asyncio.TimeoutError:
@@ -61,7 +61,7 @@ class EntryServer(Server):
         # Pipe data from reader to Discord
         try:
             while True:
-                client_data = await asyncio.wait_for(client_reader.read(DiscordBot.READ_SIZE), timeout=30)
+                client_data = await asyncio.wait_for(read_from(client_reader, DiscordBot.READ_SIZE), timeout=60)
                 if not client_data:
                     print(f'[{port}] Pipe reached EOF')
                     # await my_bot.send_packet(dst, port, flags=PacketFlag.END, payload=b'')

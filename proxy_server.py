@@ -6,6 +6,7 @@ import collections
 import random
 import re
 import socket
+import timeit
 import traceback
 from asyncio import StreamReader, StreamWriter
 from typing import NamedTuple
@@ -176,6 +177,19 @@ class Server(abc.ABC):
 
     async def callback(self, client_reader: StreamReader, client_writer: StreamWriter):
         raise NotImplementedError
+
+
+async def read_from(reader: StreamReader, max_amount: int, *, wait: float = 5):
+    data = await reader.read(4096)
+    # start = timeit.default_timer()
+    # while True:
+    #     data += await reader.read(min(4096, max_amount - len(data)))
+    #     end = timeit.default_timer()
+    #     print(f'Timer: {end - start}')
+    #     await asyncio.sleep(0.1)
+    #     if len(data) >= max_amount or end - start >= wait:
+    #         break
+    return bytes(data)
 
 
 async def pipe(port: int, reader: StreamReader, writer: StreamWriter):

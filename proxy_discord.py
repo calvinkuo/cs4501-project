@@ -136,15 +136,16 @@ class DiscordBot(discord.Client, abc.ABC):
                 print('Could not decrypt packet!')
 
     async def send_packet(self, dst: int, port: int, *, flags: PacketFlag = PacketFlag(0), payload: bytes = b''):
-        packet = PacketEncrypted(self.id, dst, port, flags, payload)
-        # content = base65536.encode(packet.pack())
-        # if len(content) > 2000:
-        #     print("Error: content is too long", len(content))
-        # await self.channel.send(content)
-        content = packet.pack()
-        await self.channel.send("", file=discord.File(io.BytesIO(content),
-                                                      f'{SHA256.new(content).hexdigest()[:8]}.bin'))
-        print('Sent', packet)
+        if self.channel:
+            packet = PacketEncrypted(self.id, dst, port, flags, payload)
+            # content = base65536.encode(packet.pack())
+            # if len(content) > 2000:
+            #     print("Error: content is too long", len(content))
+            # await self.channel.send(content)
+            content = packet.pack()
+            await self.channel.send("", file=discord.File(io.BytesIO(content),
+                                                          f'{SHA256.new(content).hexdigest()[:8]}.bin'))
+            print('Sent', packet)
 
     async def callback(self, packet: Packet):
         raise NotImplementedError
