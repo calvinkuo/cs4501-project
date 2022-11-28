@@ -24,7 +24,7 @@ class ExitServer(Server):
         if (packet.src, port) in self.reader_writer_dict:
             server_writer = self.reader_writer_dict[packet.src, port].writer
             server_writer.write(bytes(packet.payload))
-            print(f'[{port}] Sent to server: {bytes(packet.payload)!r}')
+            print(f'[{port}] Sent to server: {len(packet.payload)} bytes')
             await server_writer.drain()
             if PacketFlag.END in packet.flags:
                 server_writer.close()

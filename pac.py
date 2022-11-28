@@ -25,6 +25,9 @@ class PACServer(Server):
         except ConnectionResetError:
             print(f'[{port}] PAC client connection reset')
             return
+        except asyncio.IncompleteReadError as e:
+            print(f'[{port}] PAC client incomplete read, partial: {e.partial!r}')
+            return
         except (EOFError, OSError):
             print(f'[{port}] PAC client error')
             print(traceback.format_exc())

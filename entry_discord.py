@@ -90,15 +90,16 @@ class EntryServer(Server):
             reader, writer = self.reader_writer_dict[packet.port]
             reader: StreamReader
             writer: StreamWriter
-            writer.write(packet.payload)
-            print(f'[{packet.port}] Sent to client: {packet.payload!r}')
-            await writer.drain()
-            if PacketFlag.BGN in packet.flags:
-                self.port_dst_id[packet.port] = packet.src
-            if PacketFlag.END in packet.flags:
-                writer.close()
-                await writer.wait_closed()
-                # print(f'[{port}] Closed writer')
+            if not writer.is_closing():
+                writer.write(packet.payload)
+                print(f'[{packet.port}] Sent to client: {len(packet.payload)} bytes')
+                await writer.drain()
+                if PacketFlag.BGN in packet.flags:
+                    self.port_dst_id[packet.port] = packet.src
+                if PacketFlag.END in packet.flags:
+                    writer.close()
+                    await writer.wait_closed()
+                    # print(f'[{port}] Closed writer')
 
 
 class EntryDiscordBot(DiscordBot):
@@ -112,7 +113,7 @@ class EntryDiscordBot(DiscordBot):
 if __name__ == '__main__':
     loop = asyncio.new_event_loop()
     try:
-        my_server = EntryServer()
+        my_server = EntryServer(60123)
         my_bot = EntryDiscordBot()
         asyncio.ensure_future(my_server.start(), loop=loop)
         asyncio.ensure_future(my_bot.start(os.environ['TOKEN']), loop=loop)
