@@ -97,11 +97,11 @@ class ExitServer(Server):
                 print(traceback.format_exc())
 
             # Close connection
-            if not server_writer.is_closing():
-                await server_writer.drain()
-                server_writer.close()
-                await server_writer.wait_closed()
-                print(f'[{port}] Closed writer')
+            # if not server_writer.is_closing():
+            #     await server_writer.drain()
+            #     server_writer.close()
+            #     await server_writer.wait_closed()
+            #     print(f'[{port}] Closed writer')
 
 
 class ExitDiscordBot(DiscordBot):

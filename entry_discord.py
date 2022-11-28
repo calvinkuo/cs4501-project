@@ -79,11 +79,11 @@ class EntryServer(Server):
             print(traceback.format_exc())
 
         # Close connection
-        if not client_writer.is_closing():
-            await client_writer.drain()
-            client_writer.close()
-            await client_writer.wait_closed()
-            print(f'[{port}] Closed writer')
+        # if not client_writer.is_closing():
+        #     await client_writer.drain()
+        #     client_writer.close()
+        #     await client_writer.wait_closed()
+        #     print(f'[{port}] Closed writer')
 
     async def receive(self, packet: Packet):
         if packet.port in self.reader_writer_dict:
