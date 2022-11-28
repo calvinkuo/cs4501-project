@@ -4,6 +4,7 @@ import abc
 import binascii
 import dataclasses
 import enum
+import io
 import os
 import random
 import struct
@@ -12,6 +13,7 @@ import base65536
 import discord
 import dotenv
 from Cryptodome.Cipher import AES
+from Cryptodome.Hash import SHA256
 
 # using base65535, each message has 4000 bytes
 # there are two bytes used for the port in Payload
@@ -108,7 +110,7 @@ class PacketEncrypted(Packet):
 
 
 class DiscordBot(discord.Client, abc.ABC):
-    MAX_MSG_LEN = 2000
+    MAX_MSG_LEN = 8 * 2 ** 20
     READ_SIZE = MAX_MSG_LEN * 2 - PacketEncrypted.HEADER_LEN
 
     def __init__(self, **options):
@@ -123,22 +125,26 @@ class DiscordBot(discord.Client, abc.ABC):
     async def on_message(self, message: discord.Message):
         if message.author == self.user:
             try:
-                packet = PacketEncrypted.unpack(base65536.decode(message.content))
+                # packet = PacketEncrypted.unpack(base65536.decode(message.content))
+                packet = PacketEncrypted.unpack(await message.attachments[0].read())
                 if packet.src != self.id and (packet.dst == self.id or packet.dst == 0):
                     await self.callback(packet)
+                await message.delete(delay=5.0)
             except (struct.error, binascii.Error):
                 print('Invalid packet!')
             except (ValueError, KeyError):
                 print('Could not decrypt packet!')
 
     async def send_packet(self, dst: int, port: int, *, flags: PacketFlag = PacketFlag(0), payload: bytes = b''):
-        if self.channel:
-            packet = PacketEncrypted(self.id, dst, port, flags, payload)
-            content = base65536.encode(packet.pack())
-            if len(content) > 2000:
-                print("Error: content is too long", len(content))
-            await self.channel.send(content)
-            print('Sent', packet)
+        packet = PacketEncrypted(self.id, dst, port, flags, payload)
+        # content = base65536.encode(packet.pack())
+        # if len(content) > 2000:
+        #     print("Error: content is too long", len(content))
+        # await self.channel.send(content)
+        content = packet.pack()
+        await self.channel.send("", file=discord.File(io.BytesIO(content),
+                                                      f'{SHA256.new(content).hexdigest()[:8]}.bin'))
+        print('Sent', packet)
 
     async def callback(self, packet: Packet):
         raise NotImplementedError
