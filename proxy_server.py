@@ -6,10 +6,8 @@ import collections
 import random
 import re
 import socket
-import struct
 import traceback
 from asyncio import StreamReader, StreamWriter
-from io import BytesIO
 from typing import NamedTuple
 
 NON_RESERVED_PORT_MIN = 49152
@@ -130,7 +128,6 @@ class HTTPRequest:
 
         return cls(method, request_target, http_version, headers, body)
 
-
     @property
     def target(self) -> tuple[str, int]:
         """Returns a tuple consisting of the host and port that this request should be sent to."""
@@ -162,20 +159,20 @@ class Server(abc.ABC):
             await self.stop()
 
     async def start(self):
-        """Starts the proxy server."""
+        """Starts the server."""
         self.server = await asyncio.start_server(self.callback, '0.0.0.0', self.port, start_serving=True)
-        print(f'Proxy server running on {get_local_ip_address()}:{self.port}')
+        print(f'Server running on {get_local_ip_address()}:{self.port}')
         try:
             await self.server.serve_forever()
         except asyncio.exceptions.CancelledError:
-            print(f'Proxy server task was canceled')
+            print(f'Server task was canceled')
 
     async def stop(self):
         """Stops the proxy server."""
-        print(f'Stopping proxy server')
+        print(f'Stopping server')
         self.server.close()
         await self.server.wait_closed()
-        print(f'Closed proxy server')
+        print(f'Closed server')
 
     async def callback(self, client_reader: StreamReader, client_writer: StreamWriter):
         raise NotImplementedError
@@ -205,19 +202,3 @@ async def pipe(port: int, reader: StreamReader, writer: StreamWriter):
 class ReaderWriterPair(NamedTuple):
     reader: StreamReader
     writer: StreamWriter
-
-
-class Payload(NamedTuple):
-    port: int
-    body: bytes
-
-    def pack(self) -> bytes:
-        packed = bytearray(2)
-        struct.pack_into('!H', packed, 0, self.port)
-        packed += self.body
-        return bytes(packed)
-
-    @classmethod
-    def unpack(cls, packed: bytes) -> Payload:
-        port, = struct.unpack_from('!H', packed, 0)
-        return cls(port, packed[2:])

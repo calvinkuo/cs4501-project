@@ -5,10 +5,8 @@ import os
 import traceback
 from asyncio import StreamReader, StreamWriter
 
-from proxy_discord import DiscordBot, Packet, PacketFlag, DISCORD_READ_SIZE
-from proxy_server import Server, HTTPRequest, ReaderWriterPair, Payload
-
-EXIT_PROXY_PORT = 51235
+from proxy_discord import DiscordBot, Packet, PacketFlag
+from proxy_server import Server, HTTPRequest, ReaderWriterPair
 
 
 class ExitServer(Server):
@@ -21,13 +19,12 @@ class ExitServer(Server):
 
     async def receive(self, packet: Packet):
         # Get the client's port
-        port, body = Payload.unpack(packet.payload)
-        port: int
+        port: int = packet.port
 
         if (packet.src, port) in self.reader_writer_dict:
             server_writer = self.reader_writer_dict[packet.src, port].writer
-            server_writer.write(bytes(body))
-            print(f'[{port}] Sent to server: {bytes(body)!r}')
+            server_writer.write(bytes(packet.payload))
+            print(f'[{port}] Sent to server: {bytes(packet.payload)!r}')
             await server_writer.drain()
             if PacketFlag.END in packet.flags:
                 server_writer.close()
@@ -39,7 +36,7 @@ class ExitServer(Server):
             # TODO: cache until this occurs
             # A complete HTTP request should have been sent
             try:
-                req = HTTPRequest.from_bytes(body)
+                req = HTTPRequest.from_bytes(packet.payload)
                 print(f'[{port}] Got initial request: {bytes(req)!r}')
             except asyncio.TimeoutError:
                 print(f'[{port}] Entry node timed out')
@@ -71,25 +68,25 @@ class ExitServer(Server):
             # If using HTTPS tunneling, respond to client with 200 OK so that it can begin TLS negotiation
             if req.method == 'CONNECT':
                 res = b'HTTP/1.1 200 OK\r\n\r\n'
-                await my_bot.send_packet(packet.src, Payload(port, res).pack(), PacketFlag.BGN)
-                print(f'[{port}] Sent to entry node: {res!r}')
             # Otherwise, send the initial request to the server directly
             else:
-                await my_bot.send_packet(packet.src, Payload(port, b'').pack(), PacketFlag.BGN)
-                print(f'[{port}] Sent to entry node: {b""!r}')
+                res = b''
                 server_writer.write(bytes(req))
                 print(f'[{port}] Sent to server: {bytes(req)!r}')
+            await my_bot.send_packet(packet.src, port, flags=PacketFlag.BGN, payload=res)
+            print(f'[{port}] Sent to entry node: {res!r}')
 
             # Pipe data from server to Discord
             try:
                 while True:
-                    server_data = await asyncio.wait_for(server_reader.read(DISCORD_READ_SIZE), timeout=30)
+                    server_data = await asyncio.wait_for(server_reader.read(DiscordBot.READ_SIZE), timeout=30)
                     if not server_data:
                         print(f'[{port}] Pipe reached EOF')
+                        # await my_bot.send_packet(packet.src, port, flags=PacketFlag.END)
                         break
                     # print(f'[{port}] Sent through pipe: {client_data!r}')
                     print(f'[{port}] Sent {len(server_data)} bytes through pipe')
-                    await my_bot.send_packet(packet.src, Payload(port, server_data).pack())
+                    await asyncio.wait_for(my_bot.send_packet(packet.src, port, payload=server_data), timeout=30)
                     print(f'[{port}] Sent to Discord: {server_data!r}')
             except asyncio.TimeoutError:
                 print(f'[{port}] Pipe timed out')
@@ -100,7 +97,6 @@ class ExitServer(Server):
                 print(traceback.format_exc())
 
             # Close connection
-            await my_bot.send_packet(packet.src, Payload(port, b'').pack(), PacketFlag.END)
             if not server_writer.is_closing():
                 await server_writer.drain()
                 server_writer.close()
@@ -110,6 +106,8 @@ class ExitServer(Server):
 
 class ExitDiscordBot(DiscordBot):
     async def callback(self, packet: Packet):
+        if not self.is_ready():
+            await self.wait_until_ready()
         print('Received', packet)
         await my_server.receive(packet)
 
@@ -117,9 +115,9 @@ class ExitDiscordBot(DiscordBot):
 if __name__ == '__main__':
     loop = asyncio.new_event_loop()
     try:
-        my_server = ExitServer(EXIT_PROXY_PORT)
+        my_server = ExitServer()
         my_bot = ExitDiscordBot()
-        asyncio.ensure_future(my_server.start(), loop=loop)
+        # asyncio.ensure_future(my_server.start(), loop=loop)
         asyncio.ensure_future(my_bot.start(os.environ['TOKEN']), loop=loop)
         loop.run_forever()
     finally:
