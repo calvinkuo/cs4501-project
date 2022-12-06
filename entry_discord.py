@@ -6,7 +6,8 @@ import traceback
 from asyncio import StreamReader, StreamWriter
 
 import pac
-from proxy_discord import DiscordBot, Packet, PacketFlag
+from packet import PacketFlag, Packet
+from proxy_discord import DiscordBot
 from proxy_server import Server, HTTPRequest, ReaderWriterPair, get_local_ip_address, read_from
 
 
