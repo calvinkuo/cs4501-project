@@ -180,15 +180,17 @@ class Server(abc.ABC):
 
 
 async def read_from(reader: StreamReader, max_amount: int, *, wait: float = 5):
-    data = await reader.read(4096)
-    # start = timeit.default_timer()
-    # while True:
-    #     data += await reader.read(min(4096, max_amount - len(data)))
-    #     end = timeit.default_timer()
-    #     print(f'Timer: {end - start}')
-    #     await asyncio.sleep(0.1)
-    #     if len(data) >= max_amount or end - start >= wait:
-    #         break
+    chunk_size = 4096
+    if max_amount <= chunk_size:
+        return await reader.read(max_amount)
+    else:
+        data = bytearray()
+        for _ in range(0, max_amount, chunk_size):
+            chunk = await reader.read(min(chunk_size, max_amount - len(data)))
+            data.extend(chunk)
+            if len(chunk) < chunk_size:
+                # reading faster than the stream is growing
+                break
     return bytes(data)
 
 

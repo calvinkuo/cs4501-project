@@ -18,13 +18,7 @@ class EntryServer(Server):
 
     async def start(self):
         pac.make_pac(get_local_ip_address(), self.port)
-        loop = asyncio.get_event_loop()
-        # try:
-            # asyncio.ensure_future(pac.start(), loop=loop)
-        asyncio.ensure_future(super().start(), loop=loop)
-            # loop.run_forever()
-        # finally:
-        #     loop.close()
+        await asyncio.gather(pac.start(), super().start())
 
     async def callback(self, client_reader: StreamReader, client_writer: StreamWriter):
         # Get the client's port
@@ -52,6 +46,9 @@ class EntryServer(Server):
 
         # Save reader and writer
         self.reader_writer_dict[port] = ReaderWriterPair(client_reader, client_writer)
+        # if req.method == 'CONNECT':
+        #     res = b'HTTP/1.1 200 OK\r\n\r\n'
+        #     print(f'[{port}] Sent through pipe: {res!r}')
 
         # Wait for exit node to respond
         while port not in self.port_dst_id:
@@ -61,7 +58,7 @@ class EntryServer(Server):
         # Pipe data from reader to Discord
         try:
             while True:
-                client_data = await asyncio.wait_for(read_from(client_reader, DiscordBot.READ_SIZE), timeout=60)
+                client_data = await asyncio.wait_for(read_from(client_reader, DiscordBot.READ_SIZE), timeout=600)
                 if not client_data:
                     print(f'[{port}] Pipe reached EOF')
                     # await my_bot.send_packet(dst, port, flags=PacketFlag.END, payload=b'')
@@ -69,7 +66,7 @@ class EntryServer(Server):
                 # print(f'[{port}] Sent through pipe: {client_data!r}')
                 print(f'[{port}] Sent {len(client_data)} bytes through pipe')
                 await asyncio.wait_for(my_bot.send_packet(dst, port, payload=client_data), timeout=30)
-                print(f'[{port}] Sent to Discord: {bytes(req)!r}')
+                # print(f'[{port}] Sent to Discord: {bytes(req)!r}')
         except asyncio.TimeoutError:
             print(f'[{port}] Pipe timed out')
         except ConnectionResetError:
@@ -106,7 +103,7 @@ class EntryDiscordBot(DiscordBot):
     async def callback(self, packet: Packet):
         if not self.is_ready():
             await self.wait_until_ready()
-        print('Received', packet)
+        # print('Received', packet)
         await my_server.receive(packet)
 
 

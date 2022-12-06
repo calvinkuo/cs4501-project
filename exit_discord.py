@@ -37,7 +37,7 @@ class ExitServer(Server):
             # A complete HTTP request should have been sent
             try:
                 req = HTTPRequest.from_bytes(packet.payload)
-                print(f'[{port}] Got initial request: {bytes(req)!r}')
+                print(f'[{port}] Got initial request') #  : {bytes(req)!r}')
             except asyncio.TimeoutError:
                 print(f'[{port}] Entry node timed out')
                 return
@@ -68,18 +68,20 @@ class ExitServer(Server):
             # If using HTTPS tunneling, respond to client with 200 OK so that it can begin TLS negotiation
             if req.method == 'CONNECT':
                 res = b'HTTP/1.1 200 OK\r\n\r\n'
+                # pass
             # Otherwise, send the initial request to the server directly
             else:
                 res = b''
                 server_writer.write(bytes(req))
                 print(f'[{port}] Sent to server: {bytes(req)!r}')
             await my_bot.send_packet(packet.src, port, flags=PacketFlag.BGN, payload=res)
+            # await my_bot.send_packet(packet.src, port, flags=PacketFlag.BGN)
             print(f'[{port}] Sent to entry node: {res!r}')
 
             # Pipe data from server to Discord
             try:
                 while True:
-                    server_data = await asyncio.wait_for(read_from(server_reader, DiscordBot.READ_SIZE), timeout=60)
+                    server_data = await asyncio.wait_for(read_from(server_reader, DiscordBot.READ_SIZE), timeout=600)
                     if not server_data:
                         print(f'[{port}] Pipe reached EOF')
                         # await my_bot.send_packet(packet.src, port, flags=PacketFlag.END)
@@ -87,7 +89,7 @@ class ExitServer(Server):
                     # print(f'[{port}] Sent through pipe: {client_data!r}')
                     print(f'[{port}] Sent {len(server_data)} bytes through pipe')
                     await asyncio.wait_for(my_bot.send_packet(packet.src, port, payload=server_data), timeout=30)
-                    print(f'[{port}] Sent to Discord: {server_data!r}')
+                    # print(f'[{port}] Sent to Discord: {server_data!r}')
             except asyncio.TimeoutError:
                 print(f'[{port}] Pipe timed out')
             except ConnectionResetError:
@@ -108,7 +110,7 @@ class ExitDiscordBot(DiscordBot):
     async def callback(self, packet: Packet):
         if not self.is_ready():
             await self.wait_until_ready()
-        print('Received', packet)
+        # print('Received', packet)
         await my_server.receive(packet)
 
 
