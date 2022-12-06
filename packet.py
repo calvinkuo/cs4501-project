@@ -96,6 +96,9 @@ class PackableEncrypted(Packable):
     - nonce: 16 bytes
     - tag: 16 bytes
     - ciphertext: encrypted bytes of the underlying packable
+
+    Classes which inherit from this class should list this class first,
+    so that the encryption/decryption wrap any implementations in the other superclass.
     """
     ENC_HEADER_FORMAT = '!16s16s'
     ENC_HEADER_LEN = struct.calcsize(ENC_HEADER_FORMAT)
@@ -137,13 +140,23 @@ class PacketBundle(Packable):
     """
     A bundle has the following format. All values are stored in network order (big-endian).
 
-    - array of packet indices: any number of unsigned 32-bit integers (4 bytes each)
-        these represent the starting index for each packet within
-    - packet payloads: any number of byte strings, matching the indices specified
+    - array of packet indices: one or more unsigned 32-bit integers (4 bytes each)
+      these represent the starting and ending indices for each packet within
+    - packet payloads: one or more byte strings, matching the indices specified
+    
+    If a bundle has three packets of length 16, then the bundle would be laid out as follows::
+
+        0x00: 00 00 00 10 | 00 00 00 20 | 00 00 00 30 | 00 00 00 40
+        0x10: xx xx xx xx | xx xx xx xx | xx xx xx xx | xx xx xx xx
+        0x20: yy yy yy yy | yy yy yy yy | yy yy yy yy | yy yy yy yy
+        0x30: zz zz zz zz | zz zz zz zz | zz zz zz zz | zz zz zz zz
+        0x40: [EOF]
+
+    Since the indices can be at most ``2 ** 32 - 1``, the maximum size of a packet bundle is 4 GB.
     """
     packets: list[Packable] = dataclasses.field(default_factory=list)
 
-    HEADER_INDEX_FORMAT = 'L'
+    HEADER_INDEX_FORMAT = '!L'
     HEADER_INDEX_LEN = struct.calcsize(HEADER_INDEX_FORMAT)
 
     def __len__(self):
@@ -154,13 +167,13 @@ class PacketBundle(Packable):
         payload = [p.pack() for p in self.packets]
         header = bytearray(count * self.HEADER_INDEX_LEN)
         for x, i in enumerate(itertools.accumulate((len(p) for p in payload), initial=self.HEADER_INDEX_LEN * count)):
-            struct.pack_into('!L', header, x * self.HEADER_INDEX_LEN, i)
+            struct.pack_into(self.HEADER_INDEX_FORMAT, header, x * self.HEADER_INDEX_LEN, i)
         return b''.join(itertools.chain([bytes(header)], payload))
 
     @classmethod
     def unpack(cls, bundle: bytes, *, packet_type: Type[Packable] = Packet) -> PacketBundle:
-        header_len = struct.unpack_from('!L', bundle, 0)[0]
-        header = [i[0] for i in struct.iter_unpack('!L', bundle[:header_len])]
+        header_len = struct.unpack_from(cls.HEADER_INDEX_FORMAT, bundle, 0)[0]
+        header = [i[0] for i in struct.iter_unpack(cls.HEADER_INDEX_FORMAT, bundle[:header_len])]
         packets = [packet_type.unpack(bundle[start:end]) for start, end in itertools.pairwise(header)]
         return cls(packets)
 
@@ -169,4 +182,7 @@ class PacketBundle(Packable):
 class PacketBundleEncrypted(PackableEncrypted, PacketBundle):
     """
     An encrypted bundle. See PackableEncrypted and PacketBundle for more information.
+
+    This differs from a bundle of encrypted packets in that all of the packets in
+    an encrypted bundle are encrypted together.
     """
