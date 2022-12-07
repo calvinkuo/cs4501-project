@@ -8,7 +8,7 @@ from asyncio import StreamReader, StreamWriter
 import pac
 from packet import PacketFlag, Packet
 from proxy_discord import DiscordBot
-from proxy_server import Server, HTTPRequest, ReaderWriterPair, get_local_ip_address, read_from
+from proxy_server import Server, HTTPRequest, HTTPError, ReaderWriterPair, get_local_ip_address, pipe
 
 
 class EntryServer(Server):
@@ -30,18 +30,36 @@ class EntryServer(Server):
 
         # Wait until a complete HTTP request is sent
         try:
-            req = await asyncio.wait_for(HTTPRequest.from_reader(client_reader), timeout=60)
+            req: HTTPRequest = await asyncio.wait_for(HTTPRequest.from_reader(client_reader, limit=my_bot.MAX_MSG_LEN), timeout=120)
             print(f'[{port}] Got initial request: {bytes(req)!r}')
             await my_bot.send_packet(0, port, flags=PacketFlag.BGN, payload=bytes(req))
         except asyncio.TimeoutError:
             print(f'[{port}] Entry node timed out')
+            res = b'HTTP/1.1 408 Request Timeout\r\nConnection: close\r\n\r\n'
+            client_writer.write(res)
+            print(f'[{port}] Sent to entry node: {res!r}')
+            await client_writer.drain()
+            client_writer.close()
+            await client_writer.wait_closed()
+            return
+        except HTTPError as e:
+            print(f'[{port}] Entry node request too long')
+            client_writer.write(e.res)
+            print(f'[{port}] Sent to entry node: {e.res!r}')
+            await client_writer.drain()
+            client_writer.close()
+            await client_writer.wait_closed()
             return
         except ConnectionResetError:
             print(f'[{port}] Entry node connection reset')
+            # Connection is already closed, so no need to send an error message
             return
         except (EOFError, OSError):
             print(f'[{port}] Entry node error')
             print(traceback.format_exc())
+            # Did not finish establishing HTTP connection, so just end the connection
+            client_writer.close()
+            await client_writer.wait_closed()
             return
         req.headers.proxy()
 
@@ -50,38 +68,37 @@ class EntryServer(Server):
         # if req.method == 'CONNECT':
         #     res = b'HTTP/1.1 200 OK\r\n\r\n'
         #     print(f'[{port}] Sent through pipe: {res!r}')
+        #     client_writer.write(res)
+        #     await client_writer.drain()
 
         # Wait for exit node to respond
-        while port not in self.port_dst_id:
-            await asyncio.sleep(0.1)
-        dst = self.port_dst_id[port]
+        async def wait_for_dst(port_num):
+            while port_num not in self.port_dst_id:
+                await asyncio.sleep(0.1)
+            return self.port_dst_id[port_num]
+
+        try:
+            dst = await asyncio.wait_for(wait_for_dst(port), timeout=120)
+        except asyncio.TimeoutError:
+            print(f'[{port}] Exit node timed out')
+            res = b'HTTP/1.1 504 Gateway Timeout\r\nConnection: close\r\n\r\n'
+            client_writer.write(res)
+            await client_writer.drain()
+            client_writer.close()
+            await client_writer.wait_closed()
+            return
 
         # Pipe data from reader to Discord
-        try:
-            while True:
-                client_data = await asyncio.wait_for(read_from(client_reader, DiscordBot.READ_SIZE), timeout=600)
-                if not client_data:
-                    print(f'[{port}] Pipe reached EOF')
-                    # await my_bot.send_packet(dst, port, flags=PacketFlag.END, payload=b'')
-                    break
-                # print(f'[{port}] Sent through pipe: {client_data!r}')
-                print(f'[{port}] Sent {len(client_data)} bytes through pipe')
-                await asyncio.wait_for(my_bot.send_packet(dst, port, payload=client_data), timeout=30)
-                # print(f'[{port}] Sent to Discord: {bytes(req)!r}')
-        except asyncio.TimeoutError:
-            print(f'[{port}] Pipe timed out')
-        except ConnectionResetError:
-            print(f'[{port}] Pipe connection reset')
-        except (EOFError, OSError):
-            print(f'[{port}] Pipe error')
-            print(traceback.format_exc())
+        async def callback(data: bytes):
+            await asyncio.wait_for(my_bot.send_packet(dst, port, payload=data), timeout=120)
 
-        # Close connection
-        # if not client_writer.is_closing():
-        #     await client_writer.drain()
-        #     client_writer.close()
-        #     await client_writer.wait_closed()
-        #     print(f'[{port}] Closed writer')
+        async def eof_callback():
+            # await my_bot.send_packet(dst, port, flags=PacketFlag.END)
+            pass
+
+        await pipe(port, client_reader, callback, eof_callback)
+
+        # Leave connection open for server to respond
 
     async def receive(self, packet: Packet):
         if packet.port in self.reader_writer_dict:
@@ -89,15 +106,16 @@ class EntryServer(Server):
             reader: StreamReader
             writer: StreamWriter
             if not writer.is_closing():
-                writer.write(packet.payload)
-                print(f'[{packet.port}] Sent to client: {len(packet.payload)} bytes')
+                if packet.payload:
+                    writer.write(packet.payload)
+                    print(f'[{packet.port}] Sent to client: {len(packet.payload)} bytes')
                 await writer.drain()
                 if PacketFlag.BGN in packet.flags:
                     self.port_dst_id[packet.port] = packet.src
                 if PacketFlag.END in packet.flags:
                     writer.close()
                     await writer.wait_closed()
-                    # print(f'[{port}] Closed writer')
+                    print(f'[{packet.port}] Closed writer')
 
 
 class EntryDiscordBot(DiscordBot):

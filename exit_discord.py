@@ -7,7 +7,7 @@ from asyncio import StreamReader, StreamWriter
 
 from packet import PacketFlag, Packet
 from proxy_discord import DiscordBot
-from proxy_server import Server, HTTPRequest, ReaderWriterPair, read_from
+from proxy_server import Server, HTTPRequest, ReaderWriterPair, pipe
 
 
 class ExitServer(Server):
@@ -24,43 +24,36 @@ class ExitServer(Server):
 
         if (packet.src, port) in self.reader_writer_dict:
             server_writer = self.reader_writer_dict[packet.src, port].writer
-            server_writer.write(bytes(packet.payload))
-            print(f'[{port}] Sent to server: {len(packet.payload)} bytes')
-            await server_writer.drain()
-            if PacketFlag.END in packet.flags:
-                server_writer.close()
-                await server_writer.wait_closed()
-                # print(f'[{port}] Closed writer')
+            if not server_writer.is_closing():
+                if packet.payload:
+                    server_writer.write(packet.payload)
+                    print(f'[{port}] Sent to server: {len(packet.payload)} bytes')
+                await server_writer.drain()
+                if PacketFlag.END in packet.flags:
+                    server_writer.close()
+                    await server_writer.wait_closed()
+                    print(f'[{port}] Closed writer')
         elif PacketFlag.BGN in packet.flags and (packet.src, port) not in self.reader_writer_dict:
             print(f'[{port}] Entry node connected')
 
-            # TODO: cache until this occurs
-            # A complete HTTP request should have been sent
-            try:
-                req = HTTPRequest.from_bytes(packet.payload)
-                print(f'[{port}] Got initial request') #  : {bytes(req)!r}')
-            except asyncio.TimeoutError:
-                print(f'[{port}] Entry node timed out')
-                return
-            except ConnectionResetError:
-                print(f'[{port}] Entry node connection reset')
-                return
-            except (EOFError, OSError):
-                print(f'[{port}] Entry node error')
-                print(traceback.format_exc())
-                return
+            # Complete headers for a HTTP request should have been sent
+            req = HTTPRequest.from_bytes(packet.payload)
+            print(f'[{port}] Got initial request: {bytes(req)!r}')
             req.headers.proxy()
 
             # Open a connection to the server specified in the request
             try:
-                server_reader, server_writer = await asyncio.wait_for(asyncio.open_connection(*req.target), timeout=60)
+                server_reader, server_writer = await asyncio.wait_for(asyncio.open_connection(*req.target), timeout=120)
                 print(f'[{port}] Connected to server')
             except asyncio.TimeoutError:
                 print(f'[{port}] Server timed out')
+                # The entry node will time out and serve a 504 Gateway Timeout to the client
                 return
             except (EOFError, OSError):
                 print(f'[{port}] Server error')
                 print(traceback.format_exc())
+                res = b'HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n'
+                await my_bot.send_packet(packet.src, port, flags=PacketFlag.BGN | PacketFlag.END, payload=res)
                 return
 
             # Save reader and writer
@@ -69,42 +62,28 @@ class ExitServer(Server):
             # If using HTTPS tunneling, respond to client with 200 OK so that it can begin TLS negotiation
             if req.method == 'CONNECT':
                 res = b'HTTP/1.1 200 OK\r\n\r\n'
+                # res = b''
                 # pass
             # Otherwise, send the initial request to the server directly
             else:
                 res = b''
-                server_writer.write(bytes(req))
-                print(f'[{port}] Sent to server: {bytes(req)!r}')
+                server_writer.write(packet.payload)
+                print(f'[{port}] Sent to server: {bytes(packet.payload)!r}')
             await my_bot.send_packet(packet.src, port, flags=PacketFlag.BGN, payload=res)
             # await my_bot.send_packet(packet.src, port, flags=PacketFlag.BGN)
             print(f'[{port}] Sent to entry node: {res!r}')
 
             # Pipe data from server to Discord
-            try:
-                while True:
-                    server_data = await asyncio.wait_for(read_from(server_reader, DiscordBot.READ_SIZE), timeout=600)
-                    if not server_data:
-                        print(f'[{port}] Pipe reached EOF')
-                        # await my_bot.send_packet(packet.src, port, flags=PacketFlag.END)
-                        break
-                    # print(f'[{port}] Sent through pipe: {client_data!r}')
-                    print(f'[{port}] Sent {len(server_data)} bytes through pipe')
-                    await asyncio.wait_for(my_bot.send_packet(packet.src, port, payload=server_data), timeout=30)
-                    # print(f'[{port}] Sent to Discord: {server_data!r}')
-            except asyncio.TimeoutError:
-                print(f'[{port}] Pipe timed out')
-            except ConnectionResetError:
-                print(f'[{port}] Pipe connection reset')
-            except (EOFError, OSError):
-                print(f'[{port}] Pipe error')
-                print(traceback.format_exc())
+            async def callback(data: bytes):
+                await asyncio.wait_for(my_bot.send_packet(packet.src, port, payload=data), timeout=120)
 
-            # Close connection
-            # if not server_writer.is_closing():
-            #     await server_writer.drain()
-            #     server_writer.close()
-            #     await server_writer.wait_closed()
-            #     print(f'[{port}] Closed writer')
+            async def eof_callback():
+                # await my_bot.send_packet(packet.src, port, flags=PacketFlag.END)
+                pass
+
+            await pipe(port, server_reader, callback, eof_callback)
+
+            # Leave connection open for client to respond
 
 
 class ExitDiscordBot(DiscordBot):

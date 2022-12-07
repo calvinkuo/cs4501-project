@@ -64,6 +64,7 @@ class Packet(Packable):
     - flags: unsigned 16-bit integer (2 bytes)
     - payload: bytes
     """
+
     src: int = 0  # uint32 / unsigned long / L
     dst: int = 0  # uint32 / unsigned long / L
     port: int = 0  # uint16 / unsigned short / H
@@ -78,7 +79,6 @@ class Packet(Packable):
 
     def pack(self) -> bytes:
         packet = bytearray(Packet.HEADER_LEN)
-        # print(self.src, self.dst, self.port, self.flags.value)
         struct.pack_into(Packet.HEADER_FORMAT, packet, 0, self.src, self.dst, self.port, self.flags.value)
         packet += self.payload
         return bytes(packet)
@@ -100,6 +100,7 @@ class PackableEncrypted(Packable):
     Classes which inherit from this class should list this class first,
     so that the encryption/decryption wrap any implementations in the other superclass.
     """
+
     ENC_HEADER_FORMAT = '!16s16s'
     ENC_HEADER_LEN = struct.calcsize(ENC_HEADER_FORMAT)
 
@@ -110,18 +111,15 @@ class PackableEncrypted(Packable):
         packet = super().pack()
         cipher = AES.new(AES_KEY, AES.MODE_GCM)
         ciphertext, tag = cipher.encrypt_and_digest(packet)
-        # print(cipher.nonce.hex(), tag.hex(), ciphertext.hex())
         enc_packet = bytearray(self.ENC_HEADER_LEN)
         struct.pack_into(self.ENC_HEADER_FORMAT, enc_packet, 0, cipher.nonce, tag)
         enc_packet += ciphertext
-        # print(enc_packet.hex())
         return bytes(enc_packet)
 
     @classmethod
     def unpack(cls, packet: bytes):
         nonce, tag = struct.unpack_from(cls.ENC_HEADER_FORMAT, packet, 0)
         ciphertext = packet[cls.ENC_HEADER_LEN:]
-        # print(nonce, tag, ciphertext)
         cipher = AES.new(AES_KEY, AES.MODE_GCM, nonce=nonce)
         plaintext = cipher.decrypt_and_verify(ciphertext, tag)
         return super().unpack(plaintext)
@@ -154,7 +152,8 @@ class PacketBundle(Packable):
 
     Since the indices can be at most ``2 ** 32 - 1``, the maximum size of a packet bundle is 4 GB.
     """
-    packets: list[Packable] = dataclasses.field(default_factory=list)
+
+    packets: list[Packet] = dataclasses.field(default_factory=list)
 
     HEADER_INDEX_FORMAT = '!L'
     HEADER_INDEX_LEN = struct.calcsize(HEADER_INDEX_FORMAT)

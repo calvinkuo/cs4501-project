@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from proxy_server import *
 
 ENTRY_PROXY_PORT = 51234
@@ -26,10 +28,18 @@ class EntryServer(Server):
             return
 
         # Continue piping messages back-and-forth until one of the connections is closed
+        async def server_callback(data: bytes):
+            server_writer.write(data)
+            await server_writer.drain()
+
+        async def client_callback(data: bytes):
+            client_writer.write(data)
+            await client_writer.drain()
+
         done, pending = await asyncio.wait([
-                asyncio.create_task(pipe(port, client_reader, server_writer)),
-                asyncio.create_task(pipe(port, server_reader, client_writer))
-            ], return_when=asyncio.FIRST_COMPLETED)
+                asyncio.create_task(pipe(port, client_reader, server_callback)),
+                asyncio.create_task(pipe(port, server_reader, client_callback))
+            ], return_when=asyncio.ALL_COMPLETED)
         for future in pending:
             future.cancel()
         client_writer.close()

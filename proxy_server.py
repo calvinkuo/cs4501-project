@@ -6,9 +6,9 @@ import collections
 import random
 import re
 import socket
-import timeit
 import traceback
 from asyncio import StreamReader, StreamWriter
+from collections.abc import Callable, Coroutine
 from typing import NamedTuple
 
 NON_RESERVED_PORT_MIN = 49152
@@ -73,6 +73,15 @@ class HTTPHeaders(collections.UserList[HTTPField]):
         self.data = headers
 
 
+class HTTPError(ValueError):
+    """An HTTP error response."""
+    def __init__(self, code: int, reason: str):
+        super().__init__()
+        self.code: int = code
+        self.reason: str = reason
+        self.res: bytes = f'HTTP/1.1 {self.code} {self.reason}\r\nConnection: close\r\n\r\n'.encode('ascii')
+
+
 class HTTPRequest:
     """An HTTP request, consisting of a start line, headers, and a body."""
     _RE_START_LINE = re.compile(r"([!#$%&'*+\-.^_`|~0-9A-Za-z]+) (.+) (HTTP/\d\.\d)\r\n")
@@ -85,31 +94,63 @@ class HTTPRequest:
         self.headers = headers
         self.body = body
 
+    @staticmethod
+    async def _read_until(reader: StreamReader, separator: bytes, limit: int = 0) -> bytes:
+        buffer: list[bytes] = []
+        while True:
+            try:
+                buffer.append(await reader.readuntil(separator))
+                break
+            except asyncio.LimitOverrunError as e:
+                buffer.append(await reader.readexactly(e.consumed))
+                if limit and len(buffer) > limit:
+                    break
+        return b''.join(buffer)
+
     @classmethod
-    async def from_reader(cls, reader: StreamReader):
+    async def from_reader(cls, reader: StreamReader, limit: int = 0, *, header_only: bool = True):
         """Returns an HTTPRequest instance, read from the provided StreamReader.
         Note that this method will not return until a complete request has been sent."""
-        start_line = await reader.readuntil(b'\r\n')
+        start_line = await cls._read_until(reader, b'\r\n', limit)
+        if limit and len(start_line) > limit:
+            raise HTTPError(414, 'URI Too Long')
         method, request_target, http_version = cls._RE_START_LINE.match(start_line.decode('ascii')).groups()
 
         raw_headers = []
-        while (header := await reader.readuntil(b'\r\n')) and header.rstrip(b' \t\r\n') != b'':
+        while (header := await cls._read_until(reader, b'\r\n', limit)) and header.rstrip(b' \t\r\n') != b'':
             raw_headers.append(header)
+        if limit and len(start_line) + sum(len(header) for header in raw_headers) > limit:
+            raise HTTPError(431, 'Request Header Fields Too Large')
         headers = HTTPHeaders.from_bytes(raw_headers)
 
-        # If this request has `Transfer-Encoding: chunked`, the body continues until a chunk of length of 0.
-        # If this request has a `Content-Length` header, the body will be the specified length in bytes.
-        body = b''
-        if any('chunked' in value.split(',') for key, value in headers.get('Transfer-Encoding')):
-            body = await reader.readuntil(b'0\r\n\r\n')
-        elif len(cl := headers.get('Content-Length')) > 0 \
-                and (content_length := int(cl[0].content.split(',')[0].strip(' \t'))):
-            body = await reader.readexactly(content_length)
+        if header_only:
+            body = None
+        else:
+            body = b''
+            # If this request has `Transfer-Encoding: chunked`, the body continues until a chunk of length of 0.
+            if any('chunked' in value.split(',') for key, value in headers.get('Transfer-Encoding')):
+                chunks = []
+                while True:
+                    chunk_length = int((await cls._read_until(reader, b'\r\n')).removeprefix(b'\r\n').decode('ascii'), 16)
+                    chunk = await reader.readexactly(chunk_length)
+                    if await reader.readexactly(2) != b'\r\n':
+                        raise HTTPError(400, 'Bad Request')
+                    if chunk_length == 0:
+                        break
+                    chunks.append(chunk)
+                body = b''.join(chunks)
+            # If this request has a `Content-Length` header, the body will be the specified length in bytes.
+            elif len(cl := headers.get('Content-Length')) > 0 \
+                    and (content_length := int(cl[0].content.split(',')[0].strip(' \t'))):
+                body = await reader.readexactly(content_length)
+            if limit and len(start_line) + sum(len(header) for header in raw_headers) + len(body) > limit:
+                raise HTTPError(413, 'Content Too Large')
 
         return cls(method, request_target, http_version, headers, body)
 
     @classmethod
-    def from_bytes(cls, buf: bytes):
+    def from_bytes(cls, buf: bytes, *, header_only: bool = True):
+        """Returns an HTTPRequest instance from the provided bytes instance."""
         i = buf.find(b'\r\n')
         start_line, buf = buf[:i+2], buf[i+2:]
         method, request_target, http_version = cls._RE_START_LINE.match(start_line.decode('ascii')).groups()
@@ -123,9 +164,10 @@ class HTTPRequest:
             header, buf = buf[:i+2], buf[i+2:]
         headers = HTTPHeaders.from_bytes(raw_headers)
 
-        # If this request has `Transfer-Encoding: chunked`, the body continues until a chunk of length of 0.
-        # If this request has a `Content-Length` header, the body will be the specified length in bytes.
-        body = buf
+        if header_only:
+            body = None
+        else:
+            body = buf
 
         return cls(method, request_target, http_version, headers, body)
 
@@ -141,10 +183,11 @@ class HTTPRequest:
         return host, port
 
     def __bytes__(self):
+        """Returns the HTTPRequest encoded as bytes."""
         return b''.join([f'{self.method} {self.request_target} {self.http_version}\r\n'.encode('ascii'),
                          b'\r\n'.join(f'{header.name}: {header.content}'.encode('latin1') for header in self.headers),
                          b'\r\n\r\n',
-                         self.body])
+                         self.body if self.body is not None else b''])
 
 
 class Server(abc.ABC):
@@ -179,33 +222,20 @@ class Server(abc.ABC):
         raise NotImplementedError
 
 
-async def read_from(reader: StreamReader, max_amount: int, *, wait: float = 5):
-    chunk_size = 4096
-    if max_amount <= chunk_size:
-        return await reader.read(max_amount)
-    else:
-        data = bytearray()
-        for _ in range(0, max_amount, chunk_size):
-            chunk = await reader.read(min(chunk_size, max_amount - len(data)))
-            data.extend(chunk)
-            if len(chunk) < chunk_size:
-                # reading faster than the stream is growing
-                break
-    return bytes(data)
-
-
-async def pipe(port: int, reader: StreamReader, writer: StreamWriter):
+async def pipe(port: int, reader: StreamReader,
+               callback: Callable[[bytes], Coroutine] = lambda _: asyncio.sleep(0),
+               eof_callback: Callable[[], Coroutine] = lambda: asyncio.sleep(0)):
     """Pipes data between from one stream to another."""
     try:
         while True:
-            client_data = await asyncio.wait_for(reader.read(4096), timeout=30)
+            client_data = await asyncio.wait_for(reader.read(4096), timeout=120)
             if not client_data:
                 print(f'[{port}] Pipe reached EOF')
+                await eof_callback()
                 break
             # print(f'[{port}] Sent through pipe: {client_data!r}')
             print(f'[{port}] Sent {len(client_data)} bytes through pipe')
-            writer.write(client_data)
-            await writer.drain()
+            await callback(client_data)
     except asyncio.TimeoutError:
         print(f'[{port}] Pipe timed out')
     except ConnectionResetError:
