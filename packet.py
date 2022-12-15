@@ -204,7 +204,7 @@ class PacketManager(abc.ABC):
     async def packet_queue(self, packet: Packet):
         """Queues a packet to be sent."""
         await self.queue.put(packet)
-        print("Put packet in queue")
+        # print("Put packet in queue")
 
     @abc.abstractmethod
     async def packet_send(self, packet: Packable):
@@ -258,7 +258,7 @@ class PacketManager(abc.ABC):
                                               packet_old.payload[:split_location])
                             packet_b = Packet(packet_old.src, packet_old.dst, packet_old.port,
                                               packet_old.flags & ~PacketFlag.BGN,
-                                              packet_old[split_location:])
+                                              packet_old.payload[split_location:])
                             packets_to_send.appendleft(packet_b)
                             payload = PacketBundleEncrypted(payload.packets + [packet_a])
                     assert len(payload) <= self.MAX_MSG_LEN
