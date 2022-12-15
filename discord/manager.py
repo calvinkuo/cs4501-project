@@ -13,7 +13,8 @@ from packet import PacketBundleEncrypted, PacketManager, Packable
 
 
 class DiscordPacketManager(PacketManager, discord.Client, ABC):
-    MAX_MSG_LEN = 8 * 2 ** 20  # 8 MB
+    MAX_MSG_LEN = 8 * 2 ** 20 - 324  # 8 MiB
+    # Empirical limit from https://www.reddit.com/r/discordapp/comments/ohs5wh, likely due to request overhead
 
     def __init__(self, **options):
         super().__init__(intents=discord.Intents(messages=True, guilds=True), **options)
