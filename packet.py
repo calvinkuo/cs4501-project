@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import abc
+import asyncio
 import dataclasses
 import enum
+import functools
 import itertools
+import operator
 import os
 import struct
+from asyncio import Queue
+from collections import deque
 from typing import Type
 
 import dotenv
@@ -185,3 +190,103 @@ class PacketBundleEncrypted(PackableEncrypted, PacketBundle):
     This differs from a bundle of encrypted packets in that all of the packets in
     an encrypted bundle are encrypted together.
     """
+
+
+class PacketManager(abc.ABC):
+    """A packet manager can send and receive packets. It uses an internal queue to bundle them."""
+    MAX_MSG_LEN: int = 0  # no limit
+    MSG_TIMEOUT: float = 0  # minimum timeout between packets
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.queue: Queue[Packet] = Queue()
+
+    async def packet_queue(self, packet: Packet):
+        """Queues a packet to be sent."""
+        await self.queue.put(packet)
+        print("Put packet in queue")
+
+    @abc.abstractmethod
+    async def packet_send(self, packet: Packable):
+        """Sends a packet."""
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    async def packet_receive(self, packet: Packet):
+        """Receives a packet."""
+        raise NotImplementedError
+
+    async def packet_bundle_receive(self, bundle: PacketBundle):
+        """Receives a bundle of packets."""
+        await asyncio.gather(*(self.packet_receive(packet) for packet in bundle.packets))
+
+    async def packet_loop(self):
+        """The main loop. It continually removes packets from the queue, bundles them, and sends them."""
+        packets_to_send: deque[Packet] = deque()
+        while True:
+            # If there are no pending packets or packets to send, wait until a packet is available
+            if self.queue.empty() and not packets_to_send:
+                p = await self.queue.get()
+                packets_to_send.append(p)
+
+            # Retrieve any packets currently on the queue
+            while not self.queue.empty():
+                p = self.queue.get_nowait()
+                packets_to_send.append(p)
+
+            # If there are packets to send
+            if packets_to_send:
+                # Create bundle from packets
+                payload = PacketBundleEncrypted(list(packets_to_send))
+                packets_to_send.clear()
+
+                if self.MAX_MSG_LEN:
+                    # Defer later packets if the bundle is too large
+                    while len(payload) > self.MAX_MSG_LEN:
+                        packets_to_send.appendleft(payload.packets[-1])
+                        payload = PacketBundleEncrypted(payload.packets[:-1])
+
+                    # If we can fit part of the last packet, then split it and send part of it now
+                    if packets_to_send:
+                        space_remaining = self.MAX_MSG_LEN - len(payload)
+                        split_location = space_remaining - Packet.HEADER_LEN - PacketBundleEncrypted.HEADER_INDEX_LEN
+                        if split_location > 0:
+                            print(f'Splitting packet')
+                            packet_old = packets_to_send.popleft()
+                            packet_a = Packet(packet_old.src, packet_old.dst, packet_old.port, packet_old.flags,
+                                              packet_old.payload[:split_location])
+                            packet_b = Packet(packet_old.src, packet_old.dst, packet_old.port, packet_old.flags,
+                                              packet_old[split_location:])
+                            packets_to_send.appendleft(packet_b)
+                            payload = PacketBundleEncrypted(payload.packets + [packet_a])
+                    assert len(payload) <= self.MAX_MSG_LEN
+
+                # Since the received packets may be processed out-of-order, combine packets with same destination/port
+                dst_dict: dict[tuple[int, int, int], list[int]] = {}
+                for i, p in enumerate(payload.packets):
+                    key = p.src, p.dst, p.port
+                    if key not in dst_dict:
+                        dst_dict[key] = [i]
+                    else:
+                        dst_dict[key].append(i)
+
+                packets_to_remove: list[int] = []
+                packets_to_add: list[Packet] = []
+                for k, v in dst_dict.items():
+                    if len(v) > 1:
+                        packets_to_remove += v
+                        old_p = [payload.packets[i] for i in v]
+                        p = Packet(k[0], k[1], k[2],
+                                   functools.reduce(operator.or_, (p.flags for p in old_p)),
+                                   b''.join(p.payload for p in old_p))
+                        packets_to_add.append(p)
+
+                if packets_to_remove or packets_to_add:
+                    print(f'Merging packets: removing {len(packets_to_remove)}, adding {len(packets_to_add)}')
+                    payload = PacketBundleEncrypted([p for i, p in enumerate(payload.packets)
+                                                     if i not in packets_to_remove] + packets_to_add)
+
+                # Send the bundle to the channel
+                await self.packet_send(payload)
+                print(f'Sent bundle of {len(payload.packets)} packets')
+                await asyncio.sleep(self.MSG_TIMEOUT)

@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import traceback
+from asyncio import StreamReader, StreamWriter
 
-from proxy_server import *
+from tcp_server import Server, pipe
 
-ENTRY_PROXY_PORT = 51234
+ENTRY_PROXY_PORT = 60123
 EXIT_PROXY_PORT = 51235
 
 
 class EntryServer(Server):
-    async def callback(self, client_reader: StreamReader, client_writer: StreamWriter):
+    async def client_connected(self, client_reader: StreamReader, client_writer: StreamWriter):
         """Creates a tunnel between the client and the request server.
         This method runs until either the client or the request server closes the connection."""
         # Get the client's port

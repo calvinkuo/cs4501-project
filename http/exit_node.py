@@ -1,13 +1,18 @@
 from __future__ import annotations
 
-from proxy_server import *
+import asyncio
+import traceback
+from asyncio import StreamReader, StreamWriter
+
+from http_request import HTTPRequest
+from tcp_server import Server, pipe
 
 ENTRY_PROXY_PORT = 51234
 EXIT_PROXY_PORT = 51235
 
 
 class ExitServer(Server):
-    async def callback(self, client_reader: StreamReader, client_writer: StreamWriter):
+    async def client_connected(self, client_reader: StreamReader, client_writer: StreamWriter):
         """Creates a tunnel between the client and the server it requests to connect to.
         This method runs until either the client or the server closes the connection."""
         # Get the client's port

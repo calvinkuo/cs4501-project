@@ -7,7 +7,7 @@ from asyncio import StreamReader, StreamWriter
 
 import pac
 from packet import PacketFlag, Packet
-from proxy_discord import DiscordBot
+from manager import DiscordBot
 from proxy_server import Server, HTTPRequest, HTTPError, ReaderWriterPair, get_local_ip_address, pipe
 
 

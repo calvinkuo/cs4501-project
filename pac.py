@@ -4,13 +4,14 @@ import asyncio
 import traceback
 from asyncio import StreamReader, StreamWriter
 
-from proxy_server import Server, HTTPRequest
+from tcp_server import Server
+from http_request import HTTPRequest
 
 PAC_PORT = 51234
 
 
 class PACServer(Server):
-    async def callback(self, client_reader: StreamReader, client_writer: StreamWriter):
+    async def client_connected(self, client_reader: StreamReader, client_writer: StreamWriter):
         # Get the client's port
         port = client_writer.get_extra_info('peername')[1]
         print(f'[{port}] PAC client connected')
