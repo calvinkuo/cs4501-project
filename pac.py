@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import traceback
 from asyncio import StreamReader, StreamWriter
+from pathlib import Path
 
 from tcp_server import Server
 from http_request import HTTPRequest
@@ -53,7 +54,8 @@ class PACServer(Server):
 
 
 def make_pac(ip_address: str, port: int):
-    with open('public/proxy.pac', 'w', encoding='utf-8') as f:
+    Path('./public/').mkdir(parents=True, exist_ok=True)
+    with open('./public/proxy.pac', 'w', encoding='utf-8') as f:
         f.write('\n'.join([
             'function FindProxyForURL(url, host) {',
            f'    if (isInNet(host, "{ip_address}", "255.255.255.255")) ' + '{',
