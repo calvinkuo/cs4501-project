@@ -253,9 +253,11 @@ class PacketManager(abc.ABC):
                         if split_location > 0:
                             print(f'Splitting packet')
                             packet_old = packets_to_send.popleft()
-                            packet_a = Packet(packet_old.src, packet_old.dst, packet_old.port, packet_old.flags,
+                            packet_a = Packet(packet_old.src, packet_old.dst, packet_old.port,
+                                              packet_old.flags & ~PacketFlag.END,
                                               packet_old.payload[:split_location])
-                            packet_b = Packet(packet_old.src, packet_old.dst, packet_old.port, packet_old.flags,
+                            packet_b = Packet(packet_old.src, packet_old.dst, packet_old.port,
+                                              packet_old.flags & ~PacketFlag.BGN,
                                               packet_old[split_location:])
                             packets_to_send.appendleft(packet_b)
                             payload = PacketBundleEncrypted(payload.packets + [packet_a])
